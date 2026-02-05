@@ -121,8 +121,8 @@ pred showScenario {
 }
 ```
 
-### 4. 検証範囲の設定（Scope）
-Alloy は有限の探索空間内で反例を探す「有界モデル検査」を行う。本検証では以下のコマンドを用いた。
+### 4. 検証範囲の設定
+Alloy は有限の探索空間内で反例を探す有界モデル検査を行う。本検証では以下のコマンドを用いた。
 
 ```alloy
 check NoJumpFromOpenToClosed for 10 Time
@@ -130,7 +130,7 @@ check HalfOpenFailureTripsBreaker for 10 Time
 run showScenario for 10 Time
 ```
 
-**スコープ設定の根拠（Small Scope Hypothesis）**: 形式手法における「小スコープ仮説」に基づき、探索範囲を 10 Timeとした。 Circuit Breaker の基本的なサイクル（`Closed` → `Open` → `Half-Open` → `Closed`/`Open`）は最短でも3〜4ステップで一周する。10ステップあれば、このサイクルを2周以上繰り返すシナリオを網羅できるため、論理的な欠陥が存在すれば検出可能であると判断した。
+**スコープ設定の根拠**: 形式手法における「小スコープ仮説」に基づき、探索範囲を 10 Timeとした。 Circuit Breaker の基本的なサイクル（`Closed` → `Open` → `Half-Open` → `Closed`/`Open`）は最短でも3〜4ステップで一周する。10ステップあれば、このサイクルを2周以上繰り返すシナリオを網羅できるため、論理的な欠陥が存在すれば検出可能であると判断した。
 
 ### 4. 結果の考察
 Alloy Analyzer 4.2 にて上記`check`, `run`コマンドを実行した結果、**No counterexample found.** , **Predicate is consistent.** という結果を得た。
