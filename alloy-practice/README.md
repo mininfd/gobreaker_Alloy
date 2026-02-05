@@ -40,7 +40,7 @@ Go言語の実装における `const` 定数定義を、Alloyの `sig` として
 * **`SuccessOp` (試験成功):**
     * Goの `onSuccess` メソッドの呼び出しに対応。特に `Half-Open` 状態での成功は状態遷移のトリガーとなる。
 
-### 3. ステートマシンの記述
+### 3. 別の状態への遷移の記述
 `util/ordering` モジュールを用いて時間の経過（ステップ）を表現し、ある時点 `t` から次の時点 `nextT` への変化を述語 `pred transition` として記述した。Goのソースコード上のロジックと、Alloyモデルの対応関係は以下の通りである。
 
 | 遷移元 | 遷移先 | トリガー (Alloy) | 対応するGo実装ロジック |
@@ -50,9 +50,20 @@ Go言語の実装における `const` 定数定義を、Alloyの `sig` として
 | `Half-Open` | `Closed` | `SuccessOp` | `onSuccess`: 無条件で `setState(StateClosed)` を実行し、カウンタをリセット。 |
 | `Half-Open` | `Open` | `Failure` | `onFailure`: 無条件で `setState(StateOpen)` を実行（試験失敗）。 |
 
-### 4. 前提条件と制約
+### 4. 前提条件の制約
 * **並行性の捨象:** `gobreaker` は `sync.Mutex` を用いて実装されているが、本検証の目的はロジックの正当性にあるため、システムの状態が離散的に遷移するモデルとして記述した。
-* **No-Opの許容:** システムにリクエストが発生しない期間を考慮し、状態が変化しないステップ（`NoOp`）を許容した。
+* **No-Opの許容:** システムにリクエストが発生しない期間を考慮し、状態が変化しないイベント（`NoOp`）を許容した。
+
+### 5. イベント発生の制約
+単純な状態遷移だけでなく、現実のソフトウェアの挙動に即した検証を行うため、各状態で発生し得るイベントを制限する `fact ValidEvents` を定義した。
+
+Go言語の実装において、例えば `Closed` 状態でタイムアウトの判定処理は行われない（リクエストの成功・失敗のみが判定される）。このように「論理的には記述できるが、現実には発生しないイベントの組み合わせ」を排除することで、反例の精度を高めている。
+
+| 状態 (State) | 発生可能なイベント | 排除したイベント | 理由 |
+| :--- | :--- | :--- | :--- |
+| `Closed` | `SuccessOp`, `Failure`, `NoOp` | `Timeout` | 定常時はリクエストの結果のみを監視するため |
+| `Open` | `Timeout`, `NoOp` | `SuccessOp`, `Failure` | 遮断中はリクエスト処理自体が行われないため |
+| `Half-Open` | `SuccessOp`, `Failure`, `NoOp` | `Timeout` | リクエストの合否がタイムアウト判定より先に確定する前提のため |
 
 
 
@@ -86,25 +97,56 @@ assert HalfOpenFailureTripsBreaker {
 }
 ```
 
-### 3. 検証範囲の設定（Scope）
+### 3. 到達可能性の検証
+前述の `assert` による検証は「不正な状態遷移が起きないこと（安全性：Safety）」を確認するものである。これに加え、システムがデッドロックに陥ることなく、正常に機能することを確認するため、到達可能性の検証を行った。
+
+**目的:**
+障害発生によって `Closed` から `Open` に遷移した後、適切な手順（`Half-Open` での成功）を経て、最終的に再び正常な `Closed` 状態へ復帰するシナリオが論理的に存在することを証明する。
+
+**検証コード:**
+`pred showScenario` を定義し、以下の条件を満たすトレース（実行経路）が存在するかを `run` コマンドで探索させた。
+
+1. ある時刻で `Open` 状態になる。
+2. ある時刻で `Half-Open` 状態になる。
+3. 最終的な時刻で `Closed` 状態に戻っている。
+
+```alloy
+pred showScenario {
+    // 少なくとも一度はOpenになる
+    some t: Time | t.state = Open
+    // 少なくとも一度はHalfOpenになる
+    some t: Time | t.state = HalfOpen
+    // 最終的にClosedに戻っている
+    last.state = Closeds
+}
+```
+
+### 4. 検証範囲の設定（Scope）
 Alloy は有限の探索空間内で反例を探す「有界モデル検査」を行う。本検証では以下のコマンドを用いた。
 
 ```alloy
 check NoJumpFromOpenToClosed for 10 Time
 check HalfOpenFailureTripsBreaker for 10 Time
+run showScenario for 10 Time
 ```
 
 **スコープ設定の根拠（Small Scope Hypothesis）**: 形式手法における「小スコープ仮説」に基づき、探索範囲を 10 Timeとした。 Circuit Breaker の基本的なサイクル（`Closed` → `Open` → `Half-Open` → `Closed`/`Open`）は最短でも3〜4ステップで一周する。10ステップあれば、このサイクルを2周以上繰り返すシナリオを網羅できるため、論理的な欠陥が存在すれば検出可能であると判断した。
 
 ### 4. 結果の考察
-Alloy Analyzer 4.2 にて上記`check`コマンドを実行した結果、**No counterexample found.** という結果を得た。
+Alloy Analyzer 4.2 にて上記`check`, `run`コマンドを実行した結果、**No counterexample found.** , **Predicate is consistent.** という結果を得た。
 
 これにより、以下の結論が得られる。
 
 - **仕様の堅牢性**: `gobreaker` の状態遷移ロジックは、モデル化された抽象度において矛盾を含んでいない。
 - **安全性の担保**: 復旧手順（`Half-Open`）をスキップするような不正な遷移は論理的に発生し得ない。
+- **到達可能性の担保**: Circuit Breaker の基本的なサイクル（`Closed` → `Open` → `Half-Open` → `Closed`/`Open`）を正しく踏めている。
 - **意図通りの挙動**: 失敗時の遮断ロジックが仕様通りに機能している。
 
 以上の結果より、`sony/gobreaker` のステートマシン設計は、Circuit Breakerパターンとして要求される基本的な安全性を満たしていると結論付ける。
 
 ## 補足事項
+### 提出ファイルの構成
+本リポジトリに含まれる主要なファイルとその役割は以下の通りである。
+
+* **`gobreaker.als`**: Alloy 6 で記述された検証モデル本体。Go言語の実装ロジックを抽象化し、状態遷移と不変条件を記述している。
+* **`README.md`**: 本ドキュメント。検証対象の解説、モデル化のアプローチ、検証結果の考察をまとめている。
