@@ -55,6 +55,20 @@ pred transition [t, nextT: Time] {
     ))
 }
 
+/* * モデルの追加: 現実的なイベント発生制約 
+ * 各状態で発生し得ないイベントを排除する
+ */
+fact ValidEvents {
+    all t: Time {
+        // Closed: タイムアウトは発生しない（リクエスト成功/失敗のみ）
+        t.state = Closed implies t.event in (SuccessOp + Failure + NoOp)
+        // Open: リクエスト処理は行われない（タイムアウトのみ待機）
+        t.state = Open implies t.event in (TimeoutOp + NoOp)
+        // HalfOpen: タイムアウト判定より先にリクエスト結果が出る前提
+        t.state = HalfOpen implies t.event in (SuccessOp + Failure + NoOp)
+    }
+}
+
 // トレース: すべての隣接する時刻で遷移ルールを守る
 fact Traces {
     all t: Time - last | let nextT = t.next | transition[t, nextT]
@@ -76,10 +90,17 @@ assert HalfOpenFailureTripsBreaker {
         (t.state = HalfOpen and t.event = Failure) implies t.next.state = Open
 }
 
+/* 検証3: 到達可能性 (Reachability)
+ * エラーからの回復サイクル（Closed -> Open -> HalfOpen -> Closed）が
+ * モデル上で実行可能であることを確認する。
+ */
+pred showScenario {
+    some t: Time | t.state = Open
+    some t: Time | t.state = HalfOpen
+    last.state = Closed
+}
+
 // 実行コマンド
 --check NoJumpFromOpenToClosed for 10 Time
 --check HalfOpenFailureTripsBreaker for 10 Time
-
-// 動作確認用
-pred showScenario {}
 --run showScenario for 10 Time
